@@ -1,0 +1,24 @@
+# Arduino build and cache directories
+build/
+*.elf
+*.bin
+*.hex
+*.map
+*.eep
+*.o
+*.d
+
+# VSCode / IDE specifics
+.vscode/
+.idea/
+*.sln
+*.suo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
