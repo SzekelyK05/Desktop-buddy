@@ -3,8 +3,7 @@
 #include <Adafruit_SSD1306.h>
 #include "time.h"
 #include <WiFi.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
+#include "DHT.h"
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -12,8 +11,8 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 //wifi
-const char* ssid     = "yourssid";
-const char* password = "yourpassword";
+const char* ssid     = "your_ssid";
+const char* password = "your_password";
 
 const char* ntpServer = "pool.ntp.org";
 
@@ -26,10 +25,17 @@ const int SENSOR_PIN=19;
 bool detected=false;
 
 //temp sensor
-const int temp_sensor=23;
-OneWire oneWire(temp_sensor);
-DallasTemperature sensors(&oneWire);
-String degree = "-- \xF8" "C";
+const int DHTPIN=23;
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+//touch sensor
+const int touch_sig=13;
+unsigned long lastTouchTime = 0;
+int doubleTouch = 0;
+bool happyMouth = false;
+bool lastTouchState = LOW;
+unsigned long happyMouthStartTime = 0;
 
 //states
 enum option {face, game_menu, game, timer};
@@ -68,7 +74,7 @@ const unsigned long AWAKE_DURATION = 20000;
 //Happiness variables
 int happiness = 100;
 unsigned long lastHappinessDrop = 0;
-const unsigned long HAPPINESS_DROP_INTERVAL = 10000; // Loses 1 point every 10 seconds
+const unsigned long HAPPINESS_DROP_INTERVAL = 10000; // Loses 1 point every 10 seconds when in face state
 unsigned int HAPPINESS_DROP_INTERVAL_ACTUAL;
 
 
@@ -81,6 +87,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(up, INPUT_PULLUP);
   pinMode(down, INPUT_PULLUP);
+  pinMode(touch_sig, INPUT);
   pinMode(SENSOR_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(SENSOR_PIN), onSoundHeard, FALLING);
   Wire.begin(21, 22);
@@ -117,12 +124,8 @@ void setup() {
   // romania(utc+2/ +3 summer)
   configTzTime("EET-2EEST,M3.5.0/3,M10.5.0/4", ntpServer);
 
-  pinMode(temp_sensor, INPUT_PULLUP);
-  sensors.begin();
-  Serial.print("Sensors found: ");
-  Serial.println(sensors.getDeviceCount());
-  sensors.setWaitForConversion(false);
-  sensors.requestTemperatures();
+  Serial.println(F("DHTxx test!"));
+  dht.begin();
 
   State=face;
 
@@ -131,7 +134,7 @@ void setup() {
 void loop() {
 
   //wake up when interacting
-  if (digitalRead(up) == LOW || digitalRead(down) == LOW) {
+  if (digitalRead(up) == LOW || digitalRead(down) == LOW || digitalRead(touch_sig)) {
     isSleeping = false;
     lastWakeTime = millis();
   }
@@ -149,19 +152,15 @@ void loop() {
   }
 
   //temp
+  float h;
+  float t;
   static unsigned long lastTempUpdate = 0;
   if (millis() - lastTempUpdate >= 2000) {
-    float tempC = sensors.getTempCByIndex(0);
-    
-    if(tempC == DEVICE_DISCONNECTED_C) {
-      degree = "error";
-    } else {
-      degree = String(tempC, 1) + " \xF8" + "C"; 
-    }
-    
-    sensors.requestTemperatures(); 
+    h = dht.readHumidity();
+    t = dht.readTemperature();
     lastTempUpdate = millis();
   }
+
   
   switch(State)
   {
@@ -170,7 +169,7 @@ void loop() {
   
       if (millis() - lastFrameTime >= 33) { 
         lastFrameTime = millis();
-        updateFaceDisplay(getFormattedTime(), degree);
+        updateFaceDisplay(getFormattedTime(), t, h);
       }
   
       if (digitalRead(up) == LOW) {
@@ -448,7 +447,7 @@ void updateDisplay(String top, String bottom) {
   
 }
 
-void updateFaceDisplay(String time, String degrees) {
+void updateFaceDisplay(String time, float t, float h) {
   unsigned long currentMillis = millis();
 
   if (detected) {
@@ -460,13 +459,50 @@ void updateFaceDisplay(String time, String degrees) {
     isSleeping = true;
   }
 
+  //petting logic
+  bool touchState = digitalRead(touch_sig);
+  if (currentMillis - lastTouchTime >= 100 && touchState == HIGH && lastTouchState == LOW) {
+    if (currentMillis - lastTouchTime > 600) {
+      doubleTouch = 0;
+    }
+    doubleTouch++;
+    lastTouchTime = currentMillis;
+    
+    if (doubleTouch >= 2) {
+      doubleTouch = 0;
+      happyMouth = true;
+      happyMouthStartTime = currentMillis;
+      happiness = min(100, happiness + 25);
+    }
+  }
+  lastTouchState = touchState;
+
+  if (happyMouth == true && (currentMillis - happyMouthStartTime >= 1000)) {
+    happyMouth = false;
+  }
+
   display.clearDisplay();     
   display.setTextSize(1);
   display.setTextColor(WHITE);
   display.setCursor(0, 0);
   display.print(time);
-  display.setCursor(85, 0);
-  display.print(degrees);
+  if(isnan(h) || isnan(t))
+  {
+    display.setCursor(85, 0);
+    display.print("error");
+  }
+  else
+  {
+    display.setCursor(84, 0);
+    display.print(t);
+    display.setCursor(120, 0);
+    display.print("C");
+    display.setCursor(84, 9);
+    display.print(h);
+    display.setCursor(120, 9);
+    display.print("%");
+  }
+  
   
   if (!isBlinking && (currentMillis - lastBlinkTime > blinkInterval)) {
     isBlinking = true;
@@ -498,15 +534,24 @@ void updateFaceDisplay(String time, String degrees) {
   }
 
   // Draw Mouth
-  if(happiness >= 66) {
-    display.fillRect(57, 45, 4, 3, WHITE);
-    display.fillRect(67, 45, 4, 3, WHITE);
+  if(happyMouth)
+  {
+    display.drawRect(60, 46, 8, 8, WHITE);
+    display.drawRect(61, 47, 6, 6, WHITE);
   }
-  else if(happiness <= 33) {
-    display.fillRect(57, 49, 4, 3, WHITE);
-    display.fillRect(67, 49, 4, 3, WHITE);
+  else
+  {
+    if(happiness >= 66) {
+      display.fillRect(57, 45, 4, 3, WHITE);
+      display.fillRect(67, 45, 4, 3, WHITE);
+    } 
+    else if(happiness <= 33) {
+      display.fillRect(57, 49, 4, 3, WHITE);
+      display.fillRect(67, 49, 4, 3, WHITE);
+    }
+    display.fillRect(60, 47, 8, 3, WHITE);
   }
-  display.fillRect(60, 47, 8, 3, WHITE);
+  
 
   // Draw Happiness Bar
   display.drawRect(14, 61, 100, 3, WHITE);
