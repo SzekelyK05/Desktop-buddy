@@ -472,7 +472,7 @@ void updateFaceDisplay(String time, float t, float h) {
       doubleTouch = 0;
       happyMouth = true;
       happyMouthStartTime = currentMillis;
-      happiness = min(100, happiness + 25);
+      happiness = min(100, happiness + 5);
     }
   }
   lastTouchState = touchState;
